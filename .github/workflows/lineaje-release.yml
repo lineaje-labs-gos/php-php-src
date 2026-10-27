@@ -1,0 +1,107 @@
+name: Lineaje release
+
+# Run manually with an existing tag (e.g. 8.1.34-lineaje-01) to build the
+# source tarball from that tag and publish it as a GitHub release.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and release (e.g. 8.1.34-lineaje-01)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Fail early if the release already exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; delete it first to rebuild" >&2
+            exit 1
+          fi
+
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Check tag matches php_version.h
+        run: |
+          actual=$(sed -n 's/^#define PHP_VERSION "\(.*\)"/\1/p' main/php_version.h)
+          if [ "$actual" != "$TAG" ]; then
+            echo "Tag $TAG does not match PHP_VERSION $actual in main/php_version.h" >&2
+            exit 1
+          fi
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool bison re2c gcc make xz-utils pkg-config
+
+      - name: Generate configure and parser sources
+        run: |
+          ./buildconf --force
+          # the make rules for these files only exist with these extensions enabled
+          ./configure --disable-all --enable-phpdbg --enable-json --enable-pdo --enable-phar >/dev/null
+          P=$(pwd)
+          # the Makefile rules use absolute paths, so the targets must be absolute
+          make -j"$(nproc)" \
+            $P/Zend/zend_language_parser.c $P/Zend/zend_language_scanner.c \
+            $P/Zend/zend_ini_parser.c $P/Zend/zend_ini_scanner.c \
+            $P/ext/json/json_parser.tab.c $P/ext/json/json_scanner.c \
+            $P/ext/pdo/pdo_sql_parser.c $P/ext/phar/phar_path_check.c \
+            $P/ext/standard/url_scanner_ex.c $P/ext/standard/var_unserializer.c \
+            $P/sapi/phpdbg/phpdbg_parser.c $P/sapi/phpdbg/phpdbg_lexer.c
+          make distclean
+          # bison writes the absolute build path into its #line directives
+          sed -i "s#$P/##g" Zend/zend_language_parser.c Zend/zend_language_parser.h \
+            Zend/zend_ini_parser.c sapi/phpdbg/phpdbg_parser.c sapi/phpdbg/phpdbg_parser.h
+          if grep -rIl "$P" . --exclude-dir=.git; then
+            echo "build path leaked into generated files" >&2
+            exit 1
+          fi
+
+      - name: Package tarball
+        run: |
+          rm -rf autom4te.cache config.nice
+          cd ..
+          cp -r "$GITHUB_WORKSPACE" "php-$TAG"
+          rm -rf "php-$TAG/.git"
+          tar -cJf "$GITHUB_WORKSPACE/php-$TAG.tar.xz" "php-$TAG"
+          cd "$GITHUB_WORKSPACE"
+          sha256sum "php-$TAG.tar.xz" | tee "php-$TAG.tar.xz.sha256"
+
+      - name: Smoke test the tarball
+        run: |
+          mkdir "$RUNNER_TEMP/verify"
+          tar -xJf "php-$TAG.tar.xz" -C "$RUNNER_TEMP/verify" --strip-components=1
+          cd "$RUNNER_TEMP/verify"
+          ./configure --disable-all >/dev/null
+          make -j"$(nproc)" >/dev/null
+          sapi/cli/php -r 'echo PHP_VERSION, "\n";' | grep -Fx "$TAG"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha=$(cut -d' ' -f1 "php-$TAG.tar.xz.sha256")
+          base=${TAG%%-*}   # 8.1.34 from 8.1.34-lineaje-01
+          {
+            echo "PHP $base with Lineaje changes. Includes pre-generated configure and parser sources."
+            echo
+            echo "SHA-256: \`$sha\`"
+          } > notes.md
+          gh release create "$TAG" "php-$TAG.tar.xz" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "PHP $TAG" \
+            --notes-file notes.md \
+            --generate-notes
