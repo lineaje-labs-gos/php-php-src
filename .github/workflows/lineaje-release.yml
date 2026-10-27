@@ -29,9 +29,14 @@ jobs:
           fi
 
       - name: Checkout tag
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.TAG }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # plain git instead of actions/checkout: only actions owned by the org are allowed
+          git clone --depth 1 --branch "$TAG" \
+            "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" .
+          # don't leave the token in .git/config
+          git remote set-url origin "https://github.com/${{ github.repository }}.git"
 
       - name: Check tag matches php_version.h
         run: |
