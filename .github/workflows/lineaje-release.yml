@@ -1,0 +1,228 @@
+name: PHP (rebuild images)
+
+# Builds a committed PHP Dockerfile and pushes it to JFrog (gos-rebuild-docker-hub-images).
+# One run = the 14 base/variant combinations in the matrix below (one job, one image each).
+# The Dockerfile folder is derived from the inputs and the matrix entry, never typed:
+#   build/<reported_version>/<base>/<variant>/   (e.g. build/8.1.34-lineaje-01/bookworm/fpm/)
+# That folder must hold the image's Dockerfile + helper scripts (it is the docker build context).
+# The tag is derived as <php_version>-<variant>-<base>-lineaje,
+# matching the existing gos-rebuild-docker-hub-images/php/<tag> layout (e.g. 7.3.24-cli-alpine-lineaje).
+# The PHP source is the PHP security team's 8.1 backport (via the lineaje-labs-gos/php-php-src fork),
+# pinned by commit + SHA-256 inside each Dockerfile. No Lineaje scan/fix-plan is involved.
+
+on:
+  # Push runs are for testing: they use the default versions below. TESTING: dry run is off, so a push publishes to JFrog.
+  # Limited to the files that affect the images so unrelated pushes don't start 14 builds.
+  push:
+    paths:
+      - '.github/workflows/lineaje-release.yml'
+  workflow_dispatch:
+    inputs:
+      php_version:
+        description: 'Upstream PHP version used in the tag, e.g. 8.1.34'
+        required: true
+        type: string
+      reported_version:
+        description: 'Version string the image must report in php -v (smoke test), e.g. 8.1.34-lineaje-01'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run: build + smoke test only, do not log in to or push to JFrog'
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  build-and-push:
+    strategy:
+      # One failing image must not cancel the other combinations.
+      fail-fast: false
+      matrix:
+        include:
+          # Debian bases: all four SAPI variants
+          - { base: bookworm, variant: cli }
+          - { base: bookworm, variant: fpm }
+          - { base: bookworm, variant: apache }
+          - { base: bookworm, variant: zts }
+          - { base: trixie, variant: cli }
+          - { base: trixie, variant: fpm }
+          - { base: trixie, variant: apache }
+          - { base: trixie, variant: zts }
+          # Alpine bases: no apache variant
+          - { base: alpine3.21, variant: cli }
+          - { base: alpine3.21, variant: fpm }
+          - { base: alpine3.21, variant: zts }
+          - { base: alpine3.22, variant: cli }
+          - { base: alpine3.22, variant: fpm }
+          - { base: alpine3.22, variant: zts }
+    runs-on: ubuntu-latest
+    # Least privilege: only needs to read this repo. JFrog auth uses the JFROG_USERNAME / JFROG_PASSWORD secrets.
+    permissions:
+      contents: read
+    defaults:
+      run:
+        # bash -eo pipefail, so a failing left side of a pipe is not hidden
+        shell: bash
+    env:
+      # On push there are no inputs, so the test defaults apply.
+      PHP_VERSION: ${{ inputs.php_version || '8.1.34' }}
+      PHP_VERSION_EXPECTED: ${{ inputs.reported_version || '8.1.34-lineaje-01' }}
+      # TESTING: dry run is off, also on push (there is no dry_run input on push), so images ARE pushed to JFrog.
+      # Restore `github.event_name == 'push' || inputs.dry_run` to make pushes build-only again.
+      DRY_RUN: ${{ inputs.dry_run || 'false' }}
+      VARIANT: ${{ matrix.variant }}
+      BASE: ${{ matrix.base }}
+    steps:
+      # Org policy only allows actions owned by lineaje-labs-gos, so actions/checkout is replaced by a plain git clone.
+      # The token is passed via a one-off header, so it is never written to .git/config.
+      - name: Checkout
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref_name }}
+        run: |
+          AUTH=$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)
+          echo "::add-mask::${AUTH}"
+          git -c "http.extraheader=AUTHORIZATION: basic ${AUTH}" \
+            clone --depth 1 --branch "${REF}" "https://github.com/${REPO}.git" .
+
+      # 0. Derive names and fail early on a bad path
+      - name: Resolve image name
+        run: |
+          # All inputs are mandatory and have no defaults: a partly-filled run must not produce an image.
+          for v in PHP_VERSION PHP_VERSION_EXPECTED VARIANT BASE; do
+            val="${!v}"
+            if [ -z "${val// /}" ] || [ "${val}" = "-- select --" ]; then
+              echo "::error::Input for ${v} is missing (every input is required)"; exit 1
+            fi
+          done
+          # The reported version must belong to the upstream version used in the tag (8.1.34 / 8.1.34-lineaje-01)
+          if [[ "${PHP_VERSION_EXPECTED}" != "${PHP_VERSION}"* ]]; then
+            echo "::error::reported_version '${PHP_VERSION_EXPECTED}' does not start with php_version '${PHP_VERSION}'"; exit 1
+          fi
+          CONTEXT="build/${PHP_VERSION_EXPECTED}/${BASE}/${VARIANT}"
+          echo "CONTEXT=${CONTEXT}" >> "$GITHUB_ENV"
+          if [ ! -f "${CONTEXT}/Dockerfile" ]; then
+            echo "::error::No Dockerfile at ${CONTEXT}/Dockerfile (expected build/<reported_version>/<base>/<variant>/Dockerfile)"; exit 1
+          fi
+          # The official PHP images have no apache variant on Alpine
+          if [ "${VARIANT}" = "apache" ] && [[ "${BASE}" == alpine* ]]; then
+            echo "::error::variant 'apache' does not exist for Alpine bases (${BASE})"; exit 1
+          fi
+          # The Dockerfile must agree with the inputs, otherwise the tag would not describe the image
+          DF_VERSION=$(sed -n 's/^ENV PHP_VERSION[ =]"\{0,1\}\([^" ]*\).*/\1/p' "${CONTEXT}/Dockerfile" | head -1)
+          if [ "${DF_VERSION}" != "${PHP_VERSION_EXPECTED}" ]; then
+            echo "::error::Dockerfile PHP_VERSION is '${DF_VERSION}', but reported_version is '${PHP_VERSION_EXPECTED}'"; exit 1
+          fi
+          # The Dockerfile starts from the official PHP image of the same version, variant and base
+          EXPECT_FROM="php:${PHP_VERSION}-${VARIANT}-${BASE}"
+          DF_FROM=$(sed -n 's/^FROM[ ]*\([^ ]*\).*/\1/p' "${CONTEXT}/Dockerfile" | head -1)
+          if [ "${DF_FROM}" != "${EXPECT_FROM}" ]; then
+            echo "::error::Dockerfile starts FROM '${DF_FROM}', but base '${BASE}' expects '${EXPECT_FROM}'"; exit 1
+          fi
+          TAG="${PHP_VERSION}-${VARIANT}-${BASE}-lineaje"
+          echo "IMAGE=php:${TAG}" >> "$GITHUB_ENV"
+          echo "TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "Building php:${TAG} from ${CONTEXT}"
+
+      # 1. Build the image from the committed Dockerfile (downloads the pinned source and verifies its SHA-256).
+      #    The Dockerfile COPYs the docker-php-* helper scripts next to it, so its folder is the build context.
+      - name: Build Docker image
+        run: |
+          docker build -t "${IMAGE}" -f "${CONTEXT}/Dockerfile" "${CONTEXT}"
+
+      # 2. Smoke test before anything is pushed
+      - name: Smoke test
+        run: |
+          # Output goes to files first and is grepped afterwards: `docker run | grep -q` can die on SIGPIPE under pipefail.
+          docker run --rm "${IMAGE}" php -v > /tmp/php-v.txt
+          cat /tmp/php-v.txt
+          if ! grep -q "PHP ${PHP_VERSION_EXPECTED} " /tmp/php-v.txt; then
+            echo "::error::php -v does not report 'PHP ${PHP_VERSION_EXPECTED} '"; exit 1
+          fi
+          docker run --rm "${IMAGE}" php -m > /tmp/php-m.txt
+          if ! grep -q 'Zend OPcache' /tmp/php-m.txt; then
+            echo "::error::Zend OPcache is not loaded"; exit 1
+          fi
+          # The variant input must match what was actually built
+          case "${VARIANT}" in
+            zts) THREAD_SAFETY=ZTS ;;
+            *)   THREAD_SAFETY=NTS ;;
+          esac
+          if ! grep -q "${THREAD_SAFETY}" /tmp/php-v.txt; then
+            echo "::error::Variant '${VARIANT}' expects a ${THREAD_SAFETY} build"; exit 1
+          fi
+          case "${VARIANT}" in
+            fpm)    docker run --rm "${IMAGE}" php-fpm -t ;;
+            apache) docker run --rm "${IMAGE}" apache2ctl -t ;;
+            cli)
+              if docker run --rm "${IMAGE}" sh -c 'command -v php-fpm' > /dev/null; then
+                echo "::error::cli image must not contain php-fpm"; exit 1
+              fi ;;
+          esac
+
+      # 2b. Show what was built (log + run summary)
+      - name: Image details
+        run: |
+          fmt() { docker image inspect --format "$1" "${IMAGE}"; }
+          SIZE_MB=$(fmt '{{.Size}}' | awk '{printf "%.0f", $1/1000000}')
+          {
+            echo "### PHP image built"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Image | \`${IMAGE}\` |"
+            echo "| Build folder | \`${CONTEXT}\` |"
+            echo "| PHP | \`$(head -1 /tmp/php-v.txt)\` |"
+            echo "| Image ID | \`$(fmt '{{.Id}}')\` |"
+            echo "| Size | ${SIZE_MB} MB |"
+            echo "| Created | $(fmt '{{.Created}}') |"
+            echo "| Platform | $(fmt '{{.Os}}/{{.Architecture}}') |"
+            echo "| Layers | $(fmt '{{len .RootFS.Layers}}') |"
+            echo "| Entrypoint | \`$(fmt '{{json .Config.Entrypoint}}')\` |"
+            echo "| Cmd | \`$(fmt '{{json .Config.Cmd}}')\` |"
+            echo "| Exposed ports | \`$(fmt '{{json .Config.ExposedPorts}}')\` |"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # 3. Push to gos-rebuild-docker-hub-images
+      # docker/login-action is not an allowed action, so log in with the docker CLI.
+      - name: Login to JFrog Artifactory
+        if: ${{ env.DRY_RUN != 'true' }}
+        env:
+          JFROG_USERNAME: ${{ secrets.JFROG_USERNAME }}
+          JFROG_PASSWORD: ${{ secrets.JFROG_PASSWORD }}
+        run: |
+          echo "${JFROG_PASSWORD}" | docker login veednainc.jfrog.io -u "${JFROG_USERNAME}" --password-stdin
+
+      - name: Push to JFrog Artifactory
+        if: ${{ env.DRY_RUN != 'true' }}
+        run: |
+          REGISTRY="veednainc.jfrog.io/gos-rebuild-docker-hub-images"
+          SOURCE="${IMAGE}"
+          TARGET="${REGISTRY}/php:${TAG}"
+
+          docker tag "${SOURCE}" "${TARGET}"
+          docker push "${TARGET}"
+
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${TARGET}" | cut -d@ -f2)
+          SHA_TAG="sha256-${DIGEST#sha256:}"
+          SHA_TAG="${SHA_TAG:0:19}"
+
+          docker tag "${SOURCE}" "${REGISTRY}/php:${SHA_TAG}"
+          docker push "${REGISTRY}/php:${SHA_TAG}"
+
+          echo "Pushed: ${TARGET}"
+          echo "Pushed: ${REGISTRY}/php:${SHA_TAG}"
+          {
+            echo "### PHP image pushed"
+            echo "- \`${TARGET}\`"
+            echo "- \`${REGISTRY}/php:${SHA_TAG}\`"
+            echo "- digest: \`${DIGEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Always remove the JFrog credentials, also when the build, smoke test or push failed.
+      - name: Remove JFrog credentials
+        if: ${{ always() && env.DRY_RUN != 'true' }}
+        run: |
+          docker logout veednainc.jfrog.io || true
+          rm -f "${HOME}/.docker/config.json"
