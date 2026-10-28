@@ -1,4 +1,4 @@
-name: PHP (rebuild images)
+name: Build and push PHP lineaje images
 
 # Builds a committed PHP Dockerfile and pushes it to JFrog (gos-rebuild-docker-hub-images).
 # One run = the 14 base/variant combinations in the matrix below (one job, one image each).
@@ -15,7 +15,7 @@ on:
   # Limited to the files that affect the images so unrelated pushes don't start 14 builds.
   push:
     paths:
-      - '.github/workflows/lineaje-release.yml'
+      - '.github/workflows/build-php-lineaje-images.yml'
   workflow_dispatch:
     inputs:
       php_version:
