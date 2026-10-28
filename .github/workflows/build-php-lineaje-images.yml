@@ -1,4 +1,4 @@
-name: PHP (rebuild images)
+name: Build and push PHP lineaje images
 
 # Builds a committed PHP Dockerfile and pushes it to JFrog (gos-rebuild-docker-hub-images).
 # One run = the 14 base/variant combinations in the matrix below (one job, one image each).
@@ -11,11 +11,7 @@ name: PHP (rebuild images)
 # pinned by commit + SHA-256 inside each Dockerfile. No Lineaje scan/fix-plan is involved.
 
 on:
-  # Push runs are for testing: they use the default versions below. TESTING: dry run is off, so a push publishes to JFrog.
-  # Limited to the files that affect the images so unrelated pushes don't start 14 builds.
-  push:
-    paths:
-      - '.github/workflows/lineaje-release.yml'
+  # Manual runs only: no push trigger.
   workflow_dispatch:
     inputs:
       php_version:
@@ -64,11 +60,8 @@ jobs:
         # bash -eo pipefail, so a failing left side of a pipe is not hidden
         shell: bash
     env:
-      # On push there are no inputs, so the test defaults apply.
       PHP_VERSION: ${{ inputs.php_version || '8.1.34' }}
       PHP_VERSION_EXPECTED: ${{ inputs.reported_version || '8.1.34-lineaje-01' }}
-      # TESTING: dry run is off, also on push (there is no dry_run input on push), so images ARE pushed to JFrog.
-      # Restore `github.event_name == 'push' || inputs.dry_run` to make pushes build-only again.
       DRY_RUN: ${{ inputs.dry_run || 'false' }}
       VARIANT: ${{ matrix.variant }}
       BASE: ${{ matrix.base }}
