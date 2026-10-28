@@ -1,0 +1,123 @@
+name: Copy official PHP images
+
+# Builds the committed Dockerfiles for the official Docker Hub PHP images that contain the
+# CVE-2026-109618 / CVE-2026-109619 fix (8.2.35, 8.3.36, 8.4.27, 8.5.12) and pushes them to JFrog:
+#
+#   build/<version>/<base>/<sapi>/Dockerfile   ->   veednainc.jfrog.io/gos-rebuild-docker-hub-images/php:<version>-<sapi>-<base>-lineaje
+#   e.g. build/8.3.36/trixie/fpm/Dockerfile    ->   .../php:8.3.36-fpm-trixie-lineaje   (plus a sha256-<12 hex> tag)
+#
+# Each Dockerfile starts FROM the official php:<version>-<sapi>-<base> image (the Alpine ones also upgrade
+# brotli-libs for CVE-2026-111497). The folder next to the Dockerfile is the docker build context.
+# 4 versions x 4 bases x SAPIs = 56 images: cli/fpm/zts on every base, apache on the Debian bases only.
+# Only the linux/amd64 image is built (docker build/push on an amd64 runner).
+# One manual run builds all 56, in parallel jobs; re-run only the failed jobs from the run page.
+
+on:
+  # TEMPORARY: lets this workflow run from the feature branch without moving it to main. A push that
+  # changes this file starts the copy (it has no inputs, so it is identical to a manual run) and
+  # PUSHES to JFrog. Remove this block together with the single-image matrix test subset.
+  push:
+    branches:
+      - add_workflow_to_copy_images
+    paths:
+      - '.github/workflows/copy-official-php-images.yml'
+  workflow_dispatch:
+
+jobs:
+  copy:
+    runs-on: ubuntu-latest
+    # Least privilege: only needs to read this repo. JFrog auth uses the JFROG_USERNAME / JFROG_PASSWORD secrets.
+    permissions:
+      contents: read
+    defaults:
+      run:
+        # bash -eo pipefail, so a failing left side of a pipe is not hidden
+        shell: bash
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        php: ['8.2.35', '8.3.36', '8.4.27', '8.5.12']
+        base: [bookworm, trixie, alpine3.23, alpine3.24]
+        sapi: [cli, fpm, zts, apache]
+        exclude:
+          # the official images have no apache variant on Alpine
+          - { sapi: apache, base: alpine3.23 }
+          - { sapi: apache, base: alpine3.24 }
+    env:
+      CONTEXT: build/${{ matrix.php }}/${{ matrix.base }}/${{ matrix.sapi }}
+      TARGET_NAME: php:${{ matrix.php }}-${{ matrix.sapi }}-${{ matrix.base }}-lineaje
+      PHP_VERSION: ${{ matrix.php }}
+    steps:
+      # 0. Org policy only allows actions owned by lineaje-labs-gos, so actions/checkout is replaced by a plain git clone.
+      #    The token is passed via a one-off header, so it is never written to .git/config.
+      - name: Checkout
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref_name }}
+        run: |
+          AUTH=$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)
+          echo "::add-mask::${AUTH}"
+          git -c "http.extraheader=AUTHORIZATION: basic ${AUTH}" \
+            clone --depth 1 --branch "${REF}" "https://github.com/${REPO}.git" .
+
+      # 1. Build the image from the committed Dockerfile. The build pulls the official base image
+      #    (Docker Hub, anonymous). Retry: shared runner IPs can hit pull limits.
+      - name: Build Docker image
+        run: |
+          if [ ! -f "${CONTEXT}/Dockerfile" ]; then
+            echo "::error::No Dockerfile at ${CONTEXT}/Dockerfile"; exit 1
+          fi
+          for i in 1 2 3; do
+            docker build -t "${TARGET_NAME}" -f "${CONTEXT}/Dockerfile" "${CONTEXT}" && break
+            echo "build attempt ${i} failed"; sleep $((i * 20))
+          done
+          docker image inspect "${TARGET_NAME}" >/dev/null
+
+      # 2. It must really be the fixed PHP version before it is published under our name
+      - name: Check version
+        run: |
+          docker run --rm "${TARGET_NAME}" php -v | tee /tmp/php-v.txt
+          grep -q "PHP ${PHP_VERSION} " /tmp/php-v.txt
+
+      # 3. Push to gos-rebuild-docker-hub-images under the new name
+      # docker/login-action is not an allowed action, so log in with the docker CLI.
+      - name: Login to JFrog Artifactory
+        env:
+          JFROG_USERNAME: ${{ secrets.JFROG_USERNAME }}
+          JFROG_PASSWORD: ${{ secrets.JFROG_PASSWORD }}
+        run: |
+          echo "${JFROG_PASSWORD}" | docker login veednainc.jfrog.io -u "${JFROG_USERNAME}" --password-stdin
+
+      - name: Push to gos-rebuild-docker-hub-images
+        run: |
+          REGISTRY="veednainc.jfrog.io/gos-rebuild-docker-hub-images"
+          TARGET="${REGISTRY}/${TARGET_NAME}"
+
+          docker tag "${TARGET_NAME}" "${TARGET}"
+          docker push "${TARGET}"
+
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${TARGET}" | cut -d@ -f2)
+          SHA_TAG="sha256-${DIGEST#sha256:}"
+          SHA_TAG="${SHA_TAG:0:19}"
+
+          docker tag "${TARGET_NAME}" "${REGISTRY}/php:${SHA_TAG}"
+          docker push "${REGISTRY}/php:${SHA_TAG}"
+
+          echo "Pushed: ${TARGET}"
+          echo "Pushed: ${REGISTRY}/php:${SHA_TAG}"
+          {
+            echo "### ${CONTEXT} -> ${TARGET_NAME}"
+            echo "- \`${TARGET}\`"
+            echo "- \`${REGISTRY}/php:${SHA_TAG}\`"
+            echo "- digest: \`${DIGEST}\`"
+            echo "- PHP: \`$(head -1 /tmp/php-v.txt)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Always remove the JFrog credentials, also when the build, version check or push failed.
+      - name: Remove JFrog credentials
+        if: ${{ always() }}
+        run: |
+          docker logout veednainc.jfrog.io || true
+          rm -f "${HOME}/.docker/config.json"
