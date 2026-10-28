@@ -39,22 +39,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # TESTING: only one combination is enabled. Uncomment the rest to build all 14.
           # Debian bases: all four SAPI variants
-          # - { base: bookworm, variant: cli }
-          # - { base: bookworm, variant: fpm }
-          # - { base: bookworm, variant: apache }
-          # - { base: bookworm, variant: zts }
-          # - { base: trixie, variant: cli }
-          # - { base: trixie, variant: fpm }
-          # - { base: trixie, variant: apache }
-          # - { base: trixie, variant: zts }
+          - { base: bookworm, variant: cli }
+          - { base: bookworm, variant: fpm }
+          - { base: bookworm, variant: apache }
+          - { base: bookworm, variant: zts }
+          - { base: trixie, variant: cli }
+          - { base: trixie, variant: fpm }
+          - { base: trixie, variant: apache }
+          - { base: trixie, variant: zts }
           # Alpine bases: no apache variant
-          # - { base: alpine3.21, variant: cli }
-          # - { base: alpine3.21, variant: fpm }
-          # - { base: alpine3.21, variant: zts }
-          # - { base: alpine3.22, variant: cli }
-          # - { base: alpine3.22, variant: fpm }
+          - { base: alpine3.21, variant: cli }
+          - { base: alpine3.21, variant: fpm }
+          - { base: alpine3.21, variant: zts }
+          - { base: alpine3.22, variant: cli }
+          - { base: alpine3.22, variant: fpm }
           - { base: alpine3.22, variant: zts }
     runs-on: ubuntu-latest
     # Least privilege: only needs to read this repo. JFrog auth uses the JFROG_USERNAME / JFROG_PASSWORD secrets.
@@ -115,7 +114,8 @@ jobs:
           if [ "${DF_VERSION}" != "${PHP_VERSION_EXPECTED}" ]; then
             echo "::error::Dockerfile PHP_VERSION is '${DF_VERSION}', but reported_version is '${PHP_VERSION_EXPECTED}'"; exit 1
           fi
-          if [[ "${BASE}" == alpine* ]]; then EXPECT_FROM="alpine:${BASE#alpine}"; else EXPECT_FROM="debian:${BASE}-slim"; fi
+          # The Dockerfile starts from the official PHP image of the same version, variant and base
+          EXPECT_FROM="php:${PHP_VERSION}-${VARIANT}-${BASE}"
           DF_FROM=$(sed -n 's/^FROM[ ]*\([^ ]*\).*/\1/p' "${CONTEXT}/Dockerfile" | head -1)
           if [ "${DF_FROM}" != "${EXPECT_FROM}" ]; then
             echo "::error::Dockerfile starts FROM '${DF_FROM}', but base '${BASE}' expects '${EXPECT_FROM}'"; exit 1

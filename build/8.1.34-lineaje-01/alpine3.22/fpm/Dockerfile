@@ -7,7 +7,7 @@
 # php.net advisory 2026-10-21-5. There is no GPG signature, so integrity rests on the pinned SHA256 below.
 #
 
-FROM alpine:3.22
+FROM php:8.1.34-fpm-alpine3.22
 
 # dependencies required for running "phpize"
 # these get automatically installed and removed by "docker-php-ext-*" (unless they're already installed)
@@ -31,21 +31,21 @@ RUN apk add --no-cache \
 		xz
 
 # ensure www-data user exists
-RUN set -eux; \
-	adduser -u 82 -D -S -G www-data www-data
+# RUN set -eux; \
+# 	adduser -u 82 -D -S -G www-data www-data
 # 82 is the standard uid/gid for "www-data" in Alpine
 # https://git.alpinelinux.org/aports/tree/main/apache2/apache2.pre-install?h=3.14-stable
 # https://git.alpinelinux.org/aports/tree/main/lighttpd/lighttpd.pre-install?h=3.14-stable
 # https://git.alpinelinux.org/aports/tree/main/nginx/nginx.pre-install?h=3.14-stable
 
 ENV PHP_INI_DIR /usr/local/etc/php
-RUN set -eux; \
-	mkdir -p "$PHP_INI_DIR/conf.d"; \
-# allow running as an arbitrary user (https://github.com/docker-library/php/issues/743)
-	[ ! -d /var/www/html ]; \
-	mkdir -p /var/www/html; \
-	chown www-data:www-data /var/www/html; \
-	chmod 1777 /var/www/html
+# RUN set -eux; \
+# 	mkdir -p "$PHP_INI_DIR/conf.d"; \
+# # allow running as an arbitrary user (https://github.com/docker-library/php/issues/743)
+# 	[ ! -d /var/www/html ]; \
+# 	mkdir -p /var/www/html; \
+# 	chown www-data:www-data /var/www/html; \
+# 	chmod 1777 /var/www/html
 
 # Apply stack smash protection to functions using local buffers and alloca()
 # Make PHP's main executable position-independent (improves ASLR security mechanism, and has no performance impact on x86_64)

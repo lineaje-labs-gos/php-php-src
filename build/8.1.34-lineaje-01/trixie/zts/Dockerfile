@@ -7,7 +7,7 @@
 # php.net advisory 2026-10-21-5. There is no GPG signature, so integrity rests on the pinned SHA256 below.
 #
 
-FROM debian:trixie-slim
+FROM php:8.1.34-zts-trixie
 
 # prevent Debian's PHP packages from being installed
 # https://github.com/docker-library/php/pull/542
@@ -43,13 +43,13 @@ RUN set -eux; \
 	apt-get dist-clean
 
 ENV PHP_INI_DIR /usr/local/etc/php
-RUN set -eux; \
-	mkdir -p "$PHP_INI_DIR/conf.d"; \
-# allow running as an arbitrary user (https://github.com/docker-library/php/issues/743)
-	[ ! -d /var/www/html ]; \
-	mkdir -p /var/www/html; \
-	chown www-data:www-data /var/www/html; \
-	chmod 1777 /var/www/html
+# RUN set -eux; \
+# 	mkdir -p "$PHP_INI_DIR/conf.d"; \
+# # allow running as an arbitrary user (https://github.com/docker-library/php/issues/743)
+# 	[ ! -d /var/www/html ]; \
+# 	mkdir -p /var/www/html; \
+# 	chown www-data:www-data /var/www/html; \
+# 	chmod 1777 /var/www/html
 
 # Apply stack smash protection to functions using local buffers and alloca()
 # Make PHP's main executable position-independent (improves ASLR security mechanism, and has no performance impact on x86_64)
@@ -104,9 +104,9 @@ RUN set -eux; \
 	gnuArch="$(dpkg-architecture --query DEB_BUILD_GNU_TYPE)"; \
 	debMultiarch="$(dpkg-architecture --query DEB_BUILD_MULTIARCH)"; \
 # https://bugs.php.net/bug.php?id=74125
-	if [ ! -d /usr/include/curl ]; then \
-		ln -sT "/usr/include/$debMultiarch/curl" /usr/local/include/curl; \
-	fi; \
+	# if [ ! -d /usr/include/curl ]; then \
+	# 	ln -sT "/usr/include/$debMultiarch/curl" /usr/local/include/curl; \
+	# fi; \
 	./configure \
 		--build="$gnuArch" \
 		--with-config-file-path="$PHP_INI_DIR" \
