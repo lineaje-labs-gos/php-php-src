@@ -52,10 +52,10 @@ jobs:
           # Alpine bases: no apache variant
           # - { base: alpine3.21, variant: cli }
           # - { base: alpine3.21, variant: fpm }
-          - { base: alpine3.21, variant: zts }
+          # - { base: alpine3.21, variant: zts }
           # - { base: alpine3.22, variant: cli }
           # - { base: alpine3.22, variant: fpm }
-          # - { base: alpine3.22, variant: zts }
+          - { base: alpine3.22, variant: zts }
     runs-on: ubuntu-latest
     # Least privilege: only needs to read this repo. JFrog auth uses the JFROG_USERNAME / JFROG_PASSWORD secrets.
     permissions:
