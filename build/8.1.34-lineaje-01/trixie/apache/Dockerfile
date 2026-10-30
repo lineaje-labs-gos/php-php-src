@@ -9,6 +9,13 @@
 
 FROM php:8.1.34-apache-trixie
 
+# upgrade OS packages from the base image to pick up security fixes
+RUN set -eux; \
+	export DEBIAN_FRONTEND=noninteractive; \
+	apt-get update; \
+	apt-get upgrade -y; \
+	rm -rf /var/lib/apt/lists/*
+
 # prevent Debian's PHP packages from being installed
 # https://github.com/docker-library/php/pull/542
 RUN set -eux; \
@@ -266,6 +273,16 @@ RUN docker-php-ext-enable opcache
 
 # sodium was built as a shared module (so that it can be replaced later if so desired), so let's enable it too (https://github.com/docker-library/php/issues/598)
 RUN docker-php-ext-enable sodium
+
+# CVE-2026-115560 mitigation: session upload progress is off by default (no upstream fix yet).
+# The file is named 00-* so it loads first and any later conf.d file overrides it.
+# To turn it back on, mount or add a file such as conf.d/zz-enable-upload-progress.ini
+# containing "session.upload_progress.enabled = 1", or delete this file.
+RUN set -eux; \
+	{ \
+		echo '; CVE-2026-115560 mitigation, see the Dockerfile comment for how to re-enable'; \
+		echo 'session.upload_progress.enabled = 0'; \
+	} > "$PHP_INI_DIR/conf.d/00-lineaje-session-upload-progress.ini"
 
 ENTRYPOINT ["docker-php-entrypoint"]
 # https://httpd.apache.org/docs/2.4/stopping.html#gracefulstop
