@@ -81,7 +81,7 @@ jobs:
           docker run --rm "${TARGET_NAME}" php -v | tee /tmp/php-v.txt
           grep -q "PHP ${PHP_VERSION} " /tmp/php-v.txt
 
-      # 3. Push to gos-rebuild-docker-hub-images under the new name
+      # 3. Push to gos-rebuild-docker-hub-images under the new tag
       # docker/login-action is not an allowed action, so log in with the docker CLI.
       - name: Login to JFrog Artifactory
         env:
