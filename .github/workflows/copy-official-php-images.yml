@@ -38,7 +38,7 @@ jobs:
       max-parallel: 4
       matrix:
         php: ['8.2.35', '8.3.36', '8.4.27', '8.5.12']
-        base: [bookworm, trixie, alpine3.23, alpine3.24]
+        base: [bookworm]
         sapi: [cli, fpm, zts, apache]
         exclude:
           # the official images have no apache variant on Alpine
