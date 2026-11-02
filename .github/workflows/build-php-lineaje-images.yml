@@ -11,7 +11,14 @@ name: Build and push PHP lineaje images
 # pinned by commit + SHA-256 inside each Dockerfile. No Lineaje scan/fix-plan is involved.
 
 on:
-  # Manual runs only: no push trigger.
+  # TEMPORARY: a push to this branch that changes this file runs the workflow with the fallback values
+  # in `env` below (php_version 8.1.34, reported_version 8.1.34-lineaje-01, dry_run false) and PUSHES
+  # to JFrog. Remove this block when the test is done.
+  push:
+    branches:
+      - trigger_bookworm_images
+    paths:
+      - '.github/workflows/build-php-lineaje-images.yml'
   workflow_dispatch:
     inputs:
       php_version:
@@ -40,17 +47,17 @@ jobs:
           - { base: bookworm, variant: fpm }
           - { base: bookworm, variant: apache }
           - { base: bookworm, variant: zts }
-          - { base: trixie, variant: cli }
-          - { base: trixie, variant: fpm }
-          - { base: trixie, variant: apache }
-          - { base: trixie, variant: zts }
+          # - { base: trixie, variant: cli }
+          # - { base: trixie, variant: fpm }
+          # - { base: trixie, variant: apache }
+          # - { base: trixie, variant: zts }
           # Alpine bases: no apache variant
-          - { base: alpine3.21, variant: cli }
-          - { base: alpine3.21, variant: fpm }
-          - { base: alpine3.21, variant: zts }
-          - { base: alpine3.22, variant: cli }
-          - { base: alpine3.22, variant: fpm }
-          - { base: alpine3.22, variant: zts }
+          # - { base: alpine3.21, variant: cli }
+          # - { base: alpine3.21, variant: fpm }
+          # - { base: alpine3.21, variant: zts }
+          # - { base: alpine3.22, variant: cli }
+          # - { base: alpine3.22, variant: fpm }
+          # - { base: alpine3.22, variant: zts }
     runs-on: ubuntu-latest
     # Least privilege: only needs to read this repo. JFrog auth uses the JFROG_USERNAME / JFROG_PASSWORD secrets.
     permissions:
