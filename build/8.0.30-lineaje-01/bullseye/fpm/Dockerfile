@@ -76,7 +76,7 @@ ENV PHP_LDFLAGS="-Wl,-O1 -pie"
 
 ENV PHP_VERSION 8.0.30-lineaje-01
 ENV PHP_URL="https://github.com/lineaje-labs-gos/php-php-src/releases/download/8.0.30-lineaje-01/php-8.0.30-lineaje-01.tar.xz"
-ENV PHP_SHA256="REPLACE_WITH_SHA256_OF_php-8.0.30-lineaje-01.tar.xz"
+ENV PHP_SHA256="402b55dba2a35041c7b0d3b139cb9ab23d8382514216e5c21e537b59e485f3c0"
 
 RUN set -eux; \
 	\

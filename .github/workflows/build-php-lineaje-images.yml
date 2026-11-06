@@ -11,7 +11,14 @@ name: Build and push PHP lineaje images
 # pinned by commit + SHA-256 inside each Dockerfile. No Lineaje scan/fix-plan is involved.
 
 on:
-  # Manual runs only: no push trigger.
+  # TEMPORARY: a push to this branch that changes this file runs the workflow with the fallback values
+  # in `env` below (php_version 8.0.30, reported_version 8.0.30-lineaje-01, dry_run false) and PUSHES
+  # all 11 images to JFrog. Remove this block when the test is done.
+  push:
+    branches:
+      - trigger-8.0-images
+    paths:
+      - '.github/workflows/build-php-lineaje-images.yml'
   workflow_dispatch:
     inputs:
       php_version:
