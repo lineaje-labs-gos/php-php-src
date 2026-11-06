@@ -131,9 +131,18 @@ jobs:
             echo "::error::php -v does not report 'PHP ${PHP_VERSION_EXPECTED} '"; exit 1
           fi
           docker run --rm "${IMAGE}" php -m > /tmp/php-m.txt
-          if ! grep -q 'Zend OPcache' /tmp/php-m.txt; then
-            echo "::error::Zend OPcache is not loaded"; exit 1
-          fi
+          # The 8.1+ Dockerfiles run `docker-php-ext-enable opcache`, so OPcache must be loaded.
+          # The official 8.0 images ship opcache.so without enabling it, and these images keep that, so only check the file.
+          case "${PHP_VERSION}" in
+            7.*|8.0.*)
+              if ! docker run --rm "${IMAGE}" sh -c 'test -f "$(php-config --extension-dir)/opcache.so"'; then
+                echo "::error::opcache.so is missing from the extension dir"; exit 1
+              fi ;;
+            *)
+              if ! grep -q 'Zend OPcache' /tmp/php-m.txt; then
+                echo "::error::Zend OPcache is not loaded"; exit 1
+              fi ;;
+          esac
           # The variant input must match what was actually built
           case "${VARIANT}" in
             zts) THREAD_SAFETY=ZTS ;;
