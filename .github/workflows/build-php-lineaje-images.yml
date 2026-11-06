@@ -184,13 +184,17 @@ jobs:
         env:
           JFROG_USERNAME: ${{ secrets.JFROG_USERNAME }}
           JFROG_PASSWORD: ${{ secrets.JFROG_PASSWORD }}
+          JFROG_HOST_NAME: ${{ secrets.JFROG_HOST_NAME }}
         run: |
-          echo "${JFROG_PASSWORD}" | docker login veednainc.jfrog.io -u "${JFROG_USERNAME}" --password-stdin
+          echo "${JFROG_PASSWORD}" | docker login "${JFROG_HOST_NAME}" -u "${JFROG_USERNAME}" --password-stdin
 
       - name: Push to JFrog Artifactory
         if: ${{ env.DRY_RUN != 'true' }}
+        env:
+          JFROG_HOST_NAME: ${{ secrets.JFROG_HOST_NAME }}
+          DOCKERHUB_FORTKNOX_REBUILD_ARTIFACTORY: ${{ secrets.DOCKERHUB_FORTKNOX_REBUILD_ARTIFACTORY }}
         run: |
-          REGISTRY="veednainc.jfrog.io/gos-rebuild-docker-hub-images"
+          REGISTRY="${JFROG_HOST_NAME}/${DOCKERHUB_FORTKNOX_REBUILD_ARTIFACTORY}"
           SOURCE="${IMAGE}"
           TARGET="${REGISTRY}/php:${TAG}"
 
@@ -216,6 +220,8 @@ jobs:
       # Always remove the JFrog credentials, also when the build, smoke test or push failed.
       - name: Remove JFrog credentials
         if: ${{ always() && env.DRY_RUN != 'true' }}
+        env:
+          JFROG_HOST_NAME: ${{ secrets.JFROG_HOST_NAME }}
         run: |
-          docker logout veednainc.jfrog.io || true
+          docker logout "${JFROG_HOST_NAME}" || true
           rm -f "${HOME}/.docker/config.json"
