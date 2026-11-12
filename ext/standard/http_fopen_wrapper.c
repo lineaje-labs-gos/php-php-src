@@ -106,7 +106,9 @@ static inline void strip_header(char *header_bag, char *lc_header_bag,
 static zend_bool check_has_header(const char *headers, const char *header) {
 	const char *s = headers;
 	while ((s = strstr(s, header))) {
-		if (s == headers || *(s-1) == '\n') {
+		/* A header name only starts at the beginning of the string or after a full CRLF.
+		 * A bare "\n" inside another header's value must not count (CVE-2025-1736). */
+		if (s == headers || (*(s-1) == '\n' && *(s-2) == '\r')) {
 			return 1;
 		}
 		s++;
