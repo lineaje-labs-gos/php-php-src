@@ -53,6 +53,7 @@ ZEND_BEGIN_MODULE_GLOBALS(zend_test)
 	int replace_zend_execute_ex;
 	int register_passes;
 	int observe_opline_in_zendmm;
+	bool warn_on_startup;
 	zend_mm_heap* zend_orig_heap;
 	zend_mm_heap* zend_test_heap;
 	zend_test_fiber *active_fiber;
