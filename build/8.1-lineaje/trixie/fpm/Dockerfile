@@ -1,10 +1,11 @@
 #
 # Based on docker-library/php @ 5c037abaf9dc (8.1/trixie/fpm, last revision before 8.1 was removed).
 # PHP source is NOT the php.net 8.1.34 release: it is the lineaje-labs-gos fork
-# https://github.com/lineaje-labs-gos/php-php-src (commit df8956733c, branch PHP-8.1-CVE-2026-109618-109619
-# + a version bump), packaged as a release tarball with the generated configure/parser sources included.
-# The PHP security team's source backport (commit 1d7dec178a) fixes CVE-2026-109618 / CVE-2026-109619,
-# php.net advisory 2026-10-21-5. There is no GPG signature, so integrity rests on the pinned SHA256 below.
+# https://github.com/lineaje-labs-gos/php-php-src (tag 8.1.34-lineaje-02, branch lineaje-PHP-8.1),
+# packaged as a release tarball with the generated configure/parser sources included.
+# It carries the PHP security team's source backport (commit 1d7dec178a: CVE-2026-109618 / CVE-2026-109619,
+# php.net advisory 2026-10-21-5) plus the Lineaje backports of the PHP 8.2.36 fixes.
+# There is no GPG signature, so integrity rests on the pinned SHA256 below.
 #
 
 FROM php:8.1.34-fpm-trixie
@@ -68,9 +69,9 @@ ENV PHP_CFLAGS="-fstack-protector-strong -fpic -fpie -O2 -D_LARGEFILE_SOURCE -D_
 ENV PHP_CPPFLAGS="$PHP_CFLAGS"
 ENV PHP_LDFLAGS="-Wl,-O1 -pie"
 
-ENV PHP_VERSION 8.1.34-lineaje-01
-ENV PHP_URL="https://github.com/lineaje-labs-gos/php-php-src/releases/download/8.1.34-lineaje-01/php-8.1.34-lineaje-01.tar.xz"
-ENV PHP_SHA256="61fb3c2685adab9381244ad87bb9145010509b7f66ab87dd23380b966e77416d"
+ENV PHP_VERSION 8.1.34-lineaje-02
+ENV PHP_URL="https://github.com/lineaje-labs-gos/php-php-src/releases/download/8.1.34-lineaje-02/php-8.1.34-lineaje-02.tar.xz"
+ENV PHP_SHA256="6da6dcfb670fe3c93997ca7c4675f57a4fe1dbbd58aa9eeec704722e14953ae6"
 
 RUN set -eux; \
 	\
