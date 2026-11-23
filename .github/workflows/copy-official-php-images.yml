@@ -1,12 +1,13 @@
 name: Copy official PHP images
 
 # Builds the committed Dockerfiles for the official Docker Hub PHP images that contain the
-# CVE-2026-109618 / CVE-2026-109619 fix (8.2.35, 8.3.36, 8.4.27, 8.5.12) and pushes them to JFrog:
+# CVE-2026-109618 / CVE-2026-109619 fix (8.2.36, 8.3.37, 8.4.28, 8.5.13) and pushes them to JFrog:
 #
-#   build/<version>/<base>/<sapi>/Dockerfile   ->   veednainc.jfrog.io/gos-rebuild-docker-hub-images/php:<version>-<sapi>-<base>-lineaje
-#   e.g. build/8.3.36/trixie/fpm/Dockerfile    ->   .../php:8.3.36-fpm-trixie-lineaje   (plus a sha256-<12 hex> tag)
+#   build/<major.minor>/<base>/<sapi>/Dockerfile   ->   veednainc.jfrog.io/gos-rebuild-docker-hub-images/php:<version>-<sapi>-<base>-lineaje
+#   e.g. build/8.3/trixie/fpm/Dockerfile    ->   .../php:8.3.37-fpm-trixie-lineaje   (plus a sha256-<12 hex> tag)
 #
-# Each Dockerfile starts FROM the official php:<version>-<sapi>-<base> image (the Alpine ones also upgrade
+# Each Dockerfile starts FROM the official php:${PHP_VERSION}-<sapi>-<base> image; the workflow passes the matrix
+# version as --build-arg PHP_VERSION (the ARG default in each Dockerfile is the same version). (The Alpine ones also upgrade
 # brotli-libs for CVE-2026-111497). The folder next to the Dockerfile is the docker build context.
 # 4 versions x 4 bases x SAPIs = 56 images: cli/fpm/zts on every base, apache on the Debian bases only.
 # Only the linux/amd64 image is built (docker build/push on an amd64 runner).
@@ -37,15 +38,15 @@ jobs:
       fail-fast: false
       max-parallel: 4
       matrix:
-        php: ['8.2.35', '8.3.36', '8.4.27', '8.5.12']
-        base: [bookworm]
+        php: ['8.2.36', '8.3.37', '8.4.28', '8.5.13']
+        base: [bookworm, trixie, alpine3.23, alpine3.24]
         sapi: [cli, fpm, zts, apache]
         exclude:
           # the official images have no apache variant on Alpine
           - { sapi: apache, base: alpine3.23 }
           - { sapi: apache, base: alpine3.24 }
     env:
-      CONTEXT: build/${{ matrix.php }}/${{ matrix.base }}/${{ matrix.sapi }}
+      # CONTEXT (build/<major.minor>/<base>/<sapi>) is computed in the Checkout step, from the full matrix version
       TARGET_NAME: php:${{ matrix.php }}-${{ matrix.sapi }}-${{ matrix.base }}-lineaje
       PHP_VERSION: ${{ matrix.php }}
     steps:
@@ -61,6 +62,8 @@ jobs:
           echo "::add-mask::${AUTH}"
           git -c "http.extraheader=AUTHORIZATION: basic ${AUTH}" \
             clone --depth 1 --branch "${REF}" "https://github.com/${REPO}.git" .
+          # 8.2.36 -> build/8.2/<base>/<sapi>
+          echo "CONTEXT=build/${PHP_VERSION%.*}/${{ matrix.base }}/${{ matrix.sapi }}" >> "$GITHUB_ENV"
 
       # 1. Build the image from the committed Dockerfile. The build pulls the official base image
       #    (Docker Hub, anonymous). Retry: shared runner IPs can hit pull limits.
@@ -70,7 +73,7 @@ jobs:
             echo "::error::No Dockerfile at ${CONTEXT}/Dockerfile"; exit 1
           fi
           for i in 1 2 3; do
-            docker build -t "${TARGET_NAME}" -f "${CONTEXT}/Dockerfile" "${CONTEXT}" && break
+            docker build --build-arg "PHP_VERSION=${PHP_VERSION}" -t "${TARGET_NAME}" -f "${CONTEXT}/Dockerfile" "${CONTEXT}" && break
             echo "build attempt ${i} failed"; sleep $((i * 20))
           done
           docker image inspect "${TARGET_NAME}" >/dev/null
@@ -87,12 +90,16 @@ jobs:
         env:
           JFROG_USERNAME: ${{ secrets.JFROG_USERNAME }}
           JFROG_PASSWORD: ${{ secrets.JFROG_PASSWORD }}
+          JFROG_HOST_NAME: ${{ secrets.JFROG_HOST_NAME }}
         run: |
-          echo "${JFROG_PASSWORD}" | docker login veednainc.jfrog.io -u "${JFROG_USERNAME}" --password-stdin
+          echo "${JFROG_PASSWORD}" | docker login "${JFROG_HOST_NAME}" -u "${JFROG_USERNAME}" --password-stdin
 
       - name: Push to gos-rebuild-docker-hub-images
+        env:
+          JFROG_HOST_NAME: ${{ secrets.JFROG_HOST_NAME }}
+          DOCKERHUB_FORTKNOX_REBUILD_ARTIFACTORY: ${{ secrets.DOCKERHUB_FORTKNOX_REBUILD_ARTIFACTORY }}
         run: |
-          REGISTRY="veednainc.jfrog.io/gos-rebuild-docker-hub-images"
+          REGISTRY="${JFROG_HOST_NAME}/${DOCKERHUB_FORTKNOX_REBUILD_ARTIFACTORY}"
           TARGET="${REGISTRY}/${TARGET_NAME}"
 
           docker tag "${TARGET_NAME}" "${TARGET}"
@@ -118,6 +125,8 @@ jobs:
       # Always remove the JFrog credentials, also when the build, version check or push failed.
       - name: Remove JFrog credentials
         if: ${{ always() }}
+        env:
+          JFROG_HOST_NAME: ${{ secrets.JFROG_HOST_NAME }}
         run: |
-          docker logout veednainc.jfrog.io || true
+          docker logout "${JFROG_HOST_NAME}" || true
           rm -f "${HOME}/.docker/config.json"
