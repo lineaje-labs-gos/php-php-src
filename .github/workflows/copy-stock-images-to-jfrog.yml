@@ -1,0 +1,141 @@
+name: Copy stock PHP 8.0/8.1 images to JFrog
+
+# Copies unmodified official php images (8.0.30 and 8.1.34 only) from Docker Hub to JFrog (gos-crawler-docker-hub-images).
+# Bases per version (variants: Debian = cli|fpm|apache|zts, Alpine = cli|fpm|zts, as the official images have no Alpine apache):
+#   8.0.30: bullseye, buster, alpine3.16                    -> 11 tags
+#   8.1.34: bookworm, trixie, alpine3.21, alpine3.22        -> 14 tags (same set as build-php-lineaje-images.yml)
+# Tag format: <version>-<variant>-<base>, e.g. 8.1.34-fpm-bookworm.
+# Nothing is built or changed: `docker buildx imagetools create` copies the manifest list and all platform layers
+# registry-to-registry, so the multi-arch structure and digests stay identical to Docker Hub.
+# Target layout: <JFROG_HOST_NAME>/<DOCKERHUB_FORTKNOX_CRAWLER_ARTIFACTORY secret = gos-crawler-docker-hub-images>/php:<tag>
+# Each image gets two tags: php:<tag> and php:sha256-<first 12 hex chars of the digest>.
+
+on:
+  # Runs on any push to the trigger_stock_images_upload branch (default versions, real copy),
+  # or manually with chosen versions / dry run.
+  push:
+    branches: [trigger_stock_images_upload]
+  workflow_dispatch:
+    inputs:
+      php_versions:
+        description: 'Comma-separated PHP versions to copy; only 8.0.30 and 8.1.34 are supported'
+        required: true
+        type: string
+        default: '8.0.30,8.1.34'
+      dry_run:
+        description: 'Dry run: only list the tags that would be copied, do not log in to or push to JFrog'
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  copy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      PHP_VERSIONS: ${{ inputs.php_versions || '8.0.30,8.1.34' }}
+      DRY_RUN: ${{ inputs.dry_run || 'false' }}
+    steps:
+      # No checkout needed: nothing in this repo is used.
+
+      - name: Build tag list and check it exists on Docker Hub
+        run: |
+          : > /tmp/tags.txt
+          IFS=',' read -ra VERS <<< "${PHP_VERSIONS}"
+          for v in "${VERS[@]}"; do
+            v="${v// /}"
+            [ -z "${v}" ] && continue
+            case "${v}" in
+              8.0.30) BASES="bullseye buster alpine3.16" ;;
+              8.1.34) BASES="bookworm trixie alpine3.21 alpine3.22" ;;
+              *) echo "::error::version '${v}' is not supported (only 8.0.30 and 8.1.34)"; exit 1 ;;
+            esac
+            for base in ${BASES}; do
+              if [[ "${base}" == alpine* ]]; then
+                VARIANTS="cli fpm zts"
+              else
+                VARIANTS="cli fpm apache zts"
+              fi
+              for variant in ${VARIANTS}; do
+                echo "${v}-${variant}-${base}" >> /tmp/tags.txt
+              done
+            done
+          done
+          if [ ! -s /tmp/tags.txt ]; then
+            echo "::error::No versions given"; exit 1
+          fi
+          sort -u /tmp/tags.txt -o /tmp/tags.txt
+          echo "Tags to copy ($(wc -l < /tmp/tags.txt)):"
+          cat /tmp/tags.txt
+          # Fail before touching JFrog if any source tag is missing on Docker Hub
+          MISSING=0
+          while read -r t; do
+            if ! docker buildx imagetools inspect "docker.io/library/php:${t}" > /dev/null 2>&1; then
+              echo "::error::docker.io/library/php:${t} not found on Docker Hub"; MISSING=1
+            fi
+          done < /tmp/tags.txt
+          [ "${MISSING}" -eq 0 ] || exit 1
+          {
+            echo "### Tags selected"
+            sed 's/.*/- `php:&`/' /tmp/tags.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Login to JFrog Artifactory
+        if: ${{ env.DRY_RUN != 'true' }}
+        env:
+          JFROG_USERNAME: ${{ secrets.JFROG_USERNAME }}
+          JFROG_PASSWORD: ${{ secrets.JFROG_PASSWORD }}
+          JFROG_HOST_NAME: ${{ secrets.JFROG_HOST_NAME }}
+        run: |
+          echo "${JFROG_PASSWORD}" | docker login "${JFROG_HOST_NAME}" -u "${JFROG_USERNAME}" --password-stdin
+
+      - name: Copy images to JFrog Artifactory
+        if: ${{ env.DRY_RUN != 'true' }}
+        env:
+          JFROG_HOST_NAME: ${{ secrets.JFROG_HOST_NAME }}
+          DOCKERHUB_FORTKNOX_CRAWLER_ARTIFACTORY: ${{ secrets.DOCKERHUB_FORTKNOX_CRAWLER_ARTIFACTORY }}
+        run: |
+          REGISTRY="${JFROG_HOST_NAME}/${DOCKERHUB_FORTKNOX_CRAWLER_ARTIFACTORY}"
+          FAILED=0
+          echo "### Copied to JFrog" >> "$GITHUB_STEP_SUMMARY"
+          # One failing tag must not stop the others
+          while read -r t; do
+            SRC="docker.io/library/php:${t}"
+            DST="${REGISTRY}/php:${t}"
+            if docker buildx imagetools create --tag "${DST}" "${SRC}"; then
+              SRC_DIGEST=$(docker buildx imagetools inspect "${SRC}" --format '{{.Manifest.Digest}}')
+              DIGEST=$(docker buildx imagetools inspect "${DST}" --format '{{.Manifest.Digest}}')
+              if [ "${DIGEST}" = "${SRC_DIGEST}" ]; then
+                # Second tag from the digest (sha256- + first 12 hex chars), same as build-php-lineaje-images.yml
+                SHA_TAG="sha256-${DIGEST#sha256:}"
+                SHA_TAG="${SHA_TAG:0:19}"
+                SHA_DST="${REGISTRY}/php:${SHA_TAG}"
+                if docker buildx imagetools create --tag "${SHA_DST}" "${SRC}"; then
+                  echo "Copied ${SRC} -> ${DST} and ${SHA_DST} (${DIGEST})"
+                  echo "- \`${DST}\` and \`${SHA_DST}\` — \`${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
+                  continue
+                fi
+                echo "::error::Digest tag copy failed for ${t}"
+                FAILED=1
+                continue
+              fi
+              echo "::error::Digest mismatch for ${t}: source ${SRC_DIGEST}, target ${DIGEST}"
+            else
+              echo "::error::Copy failed for ${t}"
+            fi
+            FAILED=1
+          done < /tmp/tags.txt
+          exit "${FAILED}"
+
+      # Always remove the JFrog credentials, also when the copy failed.
+      - name: Remove JFrog credentials
+        if: ${{ always() && env.DRY_RUN != 'true' }}
+        env:
+          JFROG_HOST_NAME: ${{ secrets.JFROG_HOST_NAME }}
+        run: |
+          docker logout "${JFROG_HOST_NAME}" || true
+          rm -f "${HOME}/.docker/config.json"
