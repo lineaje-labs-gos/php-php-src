@@ -87,8 +87,8 @@ jobs:
       - name: Login to JFrog Artifactory
         if: ${{ env.DRY_RUN != 'true' }}
         env:
-          JFROG_USERNAME: ${{ secrets.JFROG_USERNAME }}
-          JFROG_PASSWORD: ${{ secrets.JFROG_PASSWORD }}
+          JFROG_USERNAME: ${{ secrets.DEVOPS_PRODUCTION_USERNAME }}
+          JFROG_PASSWORD: ${{ secrets.DEVOPS_PRODUCTION_TOKEN }}
           JFROG_HOST_NAME: ${{ secrets.JFROG_HOST_NAME }}
         run: |
           echo "${JFROG_PASSWORD}" | docker login "${JFROG_HOST_NAME}" -u "${JFROG_USERNAME}" --password-stdin
