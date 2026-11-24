@@ -1,0 +1,146 @@
+name: Copy official PHP images
+
+# Builds the official Docker Hub PHP images that contain the CVE-2026-109618 / CVE-2026-109619 fix
+# (8.2.36, 8.3.37, 8.4.28, 8.5.13) with an OS package upgrade on top, and pushes them to JFrog:
+#
+#   php:<version>-<sapi>-<base>   ->   <JFROG_HOST_NAME>/<DOCKERHUB_FORTKNOX_REBUILD_ARTIFACTORY>/php:<version>-<sapi>-<base>-lineaje
+#   e.g. php:8.3.37-fpm-trixie    ->   .../php:8.3.37-fpm-trixie-lineaje   (plus a sha256-<12 hex> tag)
+#
+# No Dockerfiles are committed: each job generates its Dockerfile on the fly in an empty temp directory
+# (FROM the official php:<version>-<sapi>-<base> image, then apt-get upgrade on Debian or apk upgrade on
+# Alpine, which also picks up brotli-libs for CVE-2026-111497). That directory is the docker build context.
+# 4 versions x 4 bases x SAPIs = 56 images: cli/fpm/zts on every base, apache on the Debian bases only.
+# Only the linux/amd64 image is built (docker build/push on an amd64 runner).
+# One manual run builds all 56, in parallel jobs; re-run only the failed jobs from the run page.
+# The dry_run input is ticked by default: it builds and version-checks every image but never logs in to or
+# pushes to JFrog. Untick it to publish.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: generate + build + version check only, do not log in to or push to JFrog (untick to publish)'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  copy:
+    runs-on: ubuntu-latest
+    # Least privilege: only needs to read this repo. JFrog auth uses the JFROG_USERNAME / JFROG_PASSWORD secrets.
+    permissions:
+      contents: read
+    defaults:
+      run:
+        # bash -eo pipefail, so a failing left side of a pipe is not hidden
+        shell: bash
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        php: ['8.2.36', '8.3.37', '8.4.28', '8.5.13']
+        base: [bookworm, trixie, alpine3.23, alpine3.24]
+        sapi: [cli, fpm, zts, apache]
+        exclude:
+          # the official images have no apache variant on Alpine
+          - { sapi: apache, base: alpine3.23 }
+          - { sapi: apache, base: alpine3.24 }
+    env:
+      TARGET_NAME: php:${{ matrix.php }}-${{ matrix.sapi }}-${{ matrix.base }}-lineaje
+      PHP_VERSION: ${{ matrix.php }}
+      SAPI: ${{ matrix.sapi }}
+      BASE: ${{ matrix.base }}
+      # Publishes only when started manually with dry_run unticked; any other trigger is a dry run.
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry_run && 'false' || 'true' }}
+    steps:
+      # 0. Generate the Dockerfile in an empty temp dir (the build context). The repo is not needed, so no checkout.
+      - name: Generate Dockerfile
+        run: |
+          CONTEXT="$(mktemp -d)"
+          echo "CONTEXT=${CONTEXT}" >> "$GITHUB_ENV"
+          {
+            echo "# Official PHP ${PHP_VERSION} ${SAPI} image on ${BASE}, plus an OS package upgrade."
+            echo "# It already contains the CVE-2026-109618 / CVE-2026-109619 fix."
+            echo "FROM php:${PHP_VERSION}-${SAPI}-${BASE}"
+            echo
+            echo "# upgrade OS packages from the base image to pick up security fixes"
+            case "${BASE}" in
+              alpine*)
+                echo "# (includes brotli-libs 1.2.1-r0, which fixes CVE-2026-111497; the base image has 1.2.0)"
+                echo "RUN apk upgrade --no-cache"
+                ;;
+              *)
+                echo 'RUN set -eux; \'
+                echo '    export DEBIAN_FRONTEND=noninteractive; \'
+                echo '    apt-get update; \'
+                echo '    apt-get upgrade -y; \'
+                echo '    rm -rf /var/lib/apt/lists/*'
+                ;;
+            esac
+          } > "${CONTEXT}/Dockerfile"
+          cat "${CONTEXT}/Dockerfile"
+
+      # 1. Build the image from the generated Dockerfile. The build pulls the official base image
+      #    (Docker Hub, anonymous). Retry: shared runner IPs can hit pull limits.
+      - name: Build Docker image
+        run: |
+          for i in 1 2 3; do
+            docker build -t "${TARGET_NAME}" -f "${CONTEXT}/Dockerfile" "${CONTEXT}" && break
+            echo "build attempt ${i} failed"; sleep $((i * 20))
+          done
+          docker image inspect "${TARGET_NAME}" >/dev/null
+
+      # 2. It must really be the fixed PHP version before it is published under our name
+      - name: Check version
+        run: |
+          docker run --rm "${TARGET_NAME}" php -v | tee /tmp/php-v.txt
+          grep -q "PHP ${PHP_VERSION} " /tmp/php-v.txt
+
+      # 3. Push to the rebuild artifactory under the new tag
+      # docker/login-action is not an allowed action, so log in with the docker CLI.
+      - name: Login to JFrog Artifactory
+        if: ${{ env.DRY_RUN != 'true' }}
+        env:
+          JFROG_USERNAME: ${{ secrets.JFROG_USERNAME }}
+          JFROG_PASSWORD: ${{ secrets.JFROG_PASSWORD }}
+          JFROG_HOST_NAME: ${{ secrets.JFROG_HOST_NAME }}
+        run: |
+          echo "${JFROG_PASSWORD}" | docker login "${JFROG_HOST_NAME}" -u "${JFROG_USERNAME}" --password-stdin
+
+      - name: Push to rebuild artifactory
+        if: ${{ env.DRY_RUN != 'true' }}
+        env:
+          JFROG_HOST_NAME: ${{ secrets.JFROG_HOST_NAME }}
+          DOCKERHUB_FORTKNOX_REBUILD_ARTIFACTORY: ${{ secrets.DOCKERHUB_FORTKNOX_REBUILD_ARTIFACTORY }}
+        run: |
+          REGISTRY="${JFROG_HOST_NAME}/${DOCKERHUB_FORTKNOX_REBUILD_ARTIFACTORY}"
+          TARGET="${REGISTRY}/${TARGET_NAME}"
+
+          docker tag "${TARGET_NAME}" "${TARGET}"
+          docker push "${TARGET}"
+
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${TARGET}" | cut -d@ -f2)
+          SHA_TAG="sha256-${DIGEST#sha256:}"
+          SHA_TAG="${SHA_TAG:0:19}"
+
+          docker tag "${TARGET_NAME}" "${REGISTRY}/php:${SHA_TAG}"
+          docker push "${REGISTRY}/php:${SHA_TAG}"
+
+          echo "Pushed: ${TARGET}"
+          echo "Pushed: ${REGISTRY}/php:${SHA_TAG}"
+          {
+            echo "### php:${PHP_VERSION}-${SAPI}-${BASE} -> ${TARGET_NAME}"
+            echo "- \`${TARGET}\`"
+            echo "- \`${REGISTRY}/php:${SHA_TAG}\`"
+            echo "- digest: \`${DIGEST}\`"
+            echo "- PHP: \`$(head -1 /tmp/php-v.txt)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Always remove the JFrog credentials, also when the build, version check or push failed.
+      - name: Remove JFrog credentials
+        if: ${{ always() && env.DRY_RUN != 'true' }}
+        env:
+          JFROG_HOST_NAME: ${{ secrets.JFROG_HOST_NAME }}
+        run: |
+          docker logout "${JFROG_HOST_NAME}" || true
+          rm -f "${HOME}/.docker/config.json"
