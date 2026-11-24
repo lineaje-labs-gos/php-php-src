@@ -3,7 +3,7 @@ name: Build and push PHP lineaje images
 # Builds a committed PHP Dockerfile and pushes it to JFrog (gos-rebuild-docker-hub-images).
 # One run = the 14 base/variant combinations in the matrix below (one job, one image each).
 # The Dockerfile folder is derived from the inputs and the matrix entry, never typed:
-#   build/<reported_version>/<base>/<variant>/   (e.g. build/8.1.34-lineaje-01/bookworm/fpm/)
+#   build/<php major.minor>-lineaje/<base>/<variant>/   (e.g. build/8.1-lineaje/bookworm/fpm/ for php_version 8.1.34)
 # That folder must hold the image's Dockerfile + helper scripts (it is the docker build context).
 # The tag is derived as <php_version>-<variant>-<base>-lineaje,
 # matching the existing gos-rebuild-docker-hub-images/php/<tag> layout (e.g. 7.3.24-cli-alpine-lineaje).
@@ -93,10 +93,14 @@ jobs:
           if [[ "${PHP_VERSION_EXPECTED}" != "${PHP_VERSION}"* ]]; then
             echo "::error::reported_version '${PHP_VERSION_EXPECTED}' does not start with php_version '${PHP_VERSION}'"; exit 1
           fi
-          CONTEXT="build/${PHP_VERSION_EXPECTED}/${BASE}/${VARIANT}"
+          # php_version must be major.minor.patch so the series folder (8.1-lineaje) can be derived from it
+          if [[ ! "${PHP_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::php_version '${PHP_VERSION}' must look like 8.1.34 (major.minor.patch)"; exit 1
+          fi
+          CONTEXT="build/${PHP_VERSION%.*}-lineaje/${BASE}/${VARIANT}"
           echo "CONTEXT=${CONTEXT}" >> "$GITHUB_ENV"
           if [ ! -f "${CONTEXT}/Dockerfile" ]; then
-            echo "::error::No Dockerfile at ${CONTEXT}/Dockerfile (expected build/<reported_version>/<base>/<variant>/Dockerfile)"; exit 1
+            echo "::error::No Dockerfile at ${CONTEXT}/Dockerfile (expected build/<php major.minor>-lineaje/<base>/<variant>/Dockerfile)"; exit 1
           fi
           # The official PHP images have no apache variant on Alpine
           if [ "${VARIANT}" = "apache" ] && [[ "${BASE}" == alpine* ]]; then
@@ -184,13 +188,17 @@ jobs:
         env:
           JFROG_USERNAME: ${{ secrets.JFROG_USERNAME }}
           JFROG_PASSWORD: ${{ secrets.JFROG_PASSWORD }}
+          JFROG_HOST_NAME: ${{ secrets.JFROG_HOST_NAME }}
         run: |
-          echo "${JFROG_PASSWORD}" | docker login veednainc.jfrog.io -u "${JFROG_USERNAME}" --password-stdin
+          echo "${JFROG_PASSWORD}" | docker login "${JFROG_HOST_NAME}" -u "${JFROG_USERNAME}" --password-stdin
 
       - name: Push to JFrog Artifactory
         if: ${{ env.DRY_RUN != 'true' }}
+        env:
+          JFROG_HOST_NAME: ${{ secrets.JFROG_HOST_NAME }}
+          DOCKERHUB_FORTKNOX_REBUILD_ARTIFACTORY: ${{ secrets.DOCKERHUB_FORTKNOX_REBUILD_ARTIFACTORY }}
         run: |
-          REGISTRY="veednainc.jfrog.io/gos-rebuild-docker-hub-images"
+          REGISTRY="${JFROG_HOST_NAME}/${DOCKERHUB_FORTKNOX_REBUILD_ARTIFACTORY}"
           SOURCE="${IMAGE}"
           TARGET="${REGISTRY}/php:${TAG}"
 
@@ -216,6 +224,8 @@ jobs:
       # Always remove the JFrog credentials, also when the build, smoke test or push failed.
       - name: Remove JFrog credentials
         if: ${{ always() && env.DRY_RUN != 'true' }}
+        env:
+          JFROG_HOST_NAME: ${{ secrets.JFROG_HOST_NAME }}
         run: |
-          docker logout veednainc.jfrog.io || true
+          docker logout "${JFROG_HOST_NAME}" || true
           rm -f "${HOME}/.docker/config.json"
